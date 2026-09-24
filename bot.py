@@ -244,25 +244,47 @@ UPLOAD_DIR = Path("/tmp/dance_uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def public_base_url() -> str:
+    """Адрес сервиса: из PUBLIC_BASE_URL либо автоопределение через Render."""
+    base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    if base:
+        return base
+    host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "")
+    if host:
+        return f"https://{host}"
+    raise RuntimeError("Не удалось определить адрес сервиса")
+
+
 async def upload_photo(data: bytes) -> str:
-    """Загружаем фото на telegra.ph и возвращаем публичный URL."""
-    form = aiohttp.FormData()
-    form.add_field("file", data, filename="photo.jpg", content_type="image/jpeg")
-    last_err = "нет ответа"
-    for _ in range(3):
+    """Фото -> публичный URL. Сначала telegra.ph, запасной путь — свой сервер."""
+    errors = []
+    # Путь 1: telegra.ph (свежая форма на КАЖДУЮ попытку)
+    for _ in range(2):
         try:
+            form = aiohttp.FormData()
+            form.add_field("file", data, filename="photo.jpg",
+                           content_type="image/jpeg")
             async with aiohttp.ClientSession() as s:
                 async with s.post("https://telegra.ph/upload",
                                   data=form,
                                   timeout=aiohttp.ClientTimeout(total=30)) as r:
                     resp = await r.json()
             url = "https://telegra.ph" + resp[0]["src"]
-            log.info("upload_photo: %s", url)
+            log.info("upload_photo (telegra.ph): %s", url)
             return url
         except Exception as e:
-            last_err = str(e)[:200]
-            await asyncio.sleep(2)
-    raise RuntimeError(f"Загрузка фото на telegra.ph не удалась: {last_err}")
+            errors.append(f"telegra.ph: {str(e)[:120]}")
+            await asyncio.sleep(1)
+    # Путь 2: хостим на самом боте (инстанс сейчас активен — URL доступен)
+    try:
+        name = f"{uuid.uuid4().hex}.jpg"
+        (UPLOAD_DIR / name).write_bytes(data)
+        url = f"{public_base_url()}/img/{name}"
+        log.info("upload_photo (self): %s", url)
+        return url
+    except Exception as e:
+        errors.append(f"self: {str(e)[:120]}")
+    raise RuntimeError("Загрузка фото не удалась: " + " | ".join(errors))
 
 
 async def piapi_headers():
