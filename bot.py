@@ -205,8 +205,16 @@ async def on_generate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         image_urls = [await upload_photo(p) for p in photos]
         log.info("on_generate: фото загружены, ссылок=%d", len(image_urls))
 
+        await msg.edit_text("🪪 Регистрация фото в PiAPI (проверка лиц, 1–3 мин)...")
+        asset_urls = []
+        for u in image_urls:
+            aid = await piapi_upload_asset(u)
+            await piapi_wait_asset(aid)
+            asset_urls.append(f"asset://{aid}")
+        log.info("on_generate: ассеты готовы: %s", asset_urls)
+
         await msg.edit_text("🎬 Отправляю задание в генератор (Seedance)...")
-        task_id = await piapi_submit(t["prompt"], image_urls)
+        task_id = await piapi_submit(t["prompt"], asset_urls)
         log.info("on_generate: задача создана, task_id=%s", task_id)
 
         await msg.edit_text("⏳ Видео генерируется (1–5 минут)...")
@@ -287,6 +295,47 @@ async def upload_photo(data: bytes) -> str:
     raise RuntimeError("Загрузка фото не удалась: " + " | ".join(errors))
 
 
+async def piapi_upload_asset(url: str) -> str:
+    """Загружает фото в Asset Library PiAPI, возвращает asset_id."""
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            "https://api.piapi.ai/api/v1/asset/upload",
+            headers=await piapi_headers(),
+            json={"url": url, "asset_type": "Image", "name": "ref"},
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as r:
+            data = await r.json()
+            if r.status >= 400:
+                raise RuntimeError(f"PiAPI asset upload {r.status}: {json.dumps(data, ensure_ascii=False)[:300]}")
+    asset_id = data.get("asset_id") or (data.get("data") or {}).get("asset_id")
+    if not asset_id:
+        raise RuntimeError(f"Неожиданный ответ asset upload: {json.dumps(data, ensure_ascii=False)[:300]}")
+    return asset_id
+
+
+async def piapi_wait_asset(asset_id: str) -> None:
+    """Ждём, пока ассет пройдёт проверку (Active)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 300
+    list_url = "https://api.piapi.ai/api/v1/asset/list?status=active,processing,failed"
+    while loop.time() < deadline:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(list_url, headers=await piapi_headers(),
+                             timeout=aiohttp.ClientTimeout(total=30)) as r:
+                data = await r.json()
+        assets = data.get("assets") or (data.get("data") or {}).get("assets") or []
+        for a in assets:
+            if a.get("asset_id") == asset_id:
+                st = (a.get("status") or "").lower()
+                log.info("piapi asset %s: %s", asset_id[:12], st)
+                if st == "active":
+                    return
+                if st == "failed":
+                    raise RuntimeError(f"PiAPI отклонил фото (asset {asset_id[:12]}): {a.get('error', '') or json.dumps(a)[:200]}")
+        await asyncio.sleep(10)
+    raise TimeoutError("Проверка фото заняла больше 5 минут")
+
+
 async def piapi_headers():
     return {"X-API-Key": PIAPI_KEY, "Content-Type": "application/json"}
 
@@ -297,14 +346,11 @@ async def piapi_submit(prompt: str, image_urls: list[str]) -> str:
         "model": PIAPI_MODEL,
         "task_type": PIAPI_TASK_TYPE,
         "input": {
-            "mode": "omni_reference",
             "prompt": prompt,
             "image_urls": image_urls,
-            "auto_upload_assets": True,
-            "asset_retention_hours": 3,
             "aspect_ratio": "9:16",
-            "resolution": "720p",
-            "duration": 10,
+            "resolution": "480p",
+            "duration": 8,
         },
     }
     async with aiohttp.ClientSession() as s:
