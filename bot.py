@@ -316,8 +316,8 @@ async def piapi_upload_asset(url: str) -> str:
 async def piapi_wait_asset(asset_id: str) -> None:
     """Ждём, пока ассет пройдёт проверку (Active)."""
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + 300
-    list_url = "https://api.piapi.ai/api/v1/asset/list?status=active,processing,failed"
+    deadline = loop.time() + 480  # до 8 минут: очередь на ревью бывает медленной
+    list_url = "https://api.piapi.ai/api/v1/asset/list"
     while loop.time() < deadline:
         async with aiohttp.ClientSession() as s:
             async with s.get(list_url, headers=await piapi_headers(),
@@ -332,8 +332,8 @@ async def piapi_wait_asset(asset_id: str) -> None:
                     return
                 if st == "failed":
                     raise RuntimeError(f"PiAPI отклонил фото (asset {asset_id[:12]}): {a.get('error', '') or json.dumps(a)[:200]}")
-        await asyncio.sleep(10)
-    raise TimeoutError("Проверка фото заняла больше 5 минут")
+        await asyncio.sleep(12)
+    raise TimeoutError("Проверка фото заняла больше 8 минут — попробуйте позже")
 
 
 async def piapi_headers():
