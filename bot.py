@@ -244,14 +244,22 @@ UPLOAD_DIR = Path("/tmp/dance_uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def public_base_url() -> str:
+    """Адрес сервиса: из PUBLIC_BASE_URL либо автоопределение через Render."""
+    base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    if base:
+        return base
+    host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "")
+    if host:
+        return f"https://{host}"
+    raise RuntimeError("Не удалось определить адрес сервиса (PUBLIC_BASE_URL не задан)")
+
+
 async def upload_photo(data: bytes) -> str:
     """Сохраняем фото на диск сервера и отдаём URL вида {BASE}/img/<id>.jpg"""
     name = f"{uuid.uuid4().hex}.jpg"
     (UPLOAD_DIR / name).write_bytes(data)
-    base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-    if not base:
-        raise RuntimeError("Не задана переменная PUBLIC_BASE_URL (адрес вашего сервиса на Render)")
-    return f"{base}/img/{name}"
+    return f"{public_base_url()}/img/{name}"
 
 
 async def piapi_headers():
